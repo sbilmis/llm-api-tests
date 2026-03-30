@@ -339,6 +339,11 @@ def run(name: str, fn, model_override=None, prompt=DEFAULT_PROMPT):
 def main():
     args = sys.argv[1:]
 
+    # ── --help ───────────────────────────────────────────────────────────────
+    if not args or "--help" in args or "-h" in args:
+        print(__doc__)
+        sys.exit(0)
+
     # ── --prompt "..." ───────────────────────────────────────────────────────
     prompt = DEFAULT_PROMPT
     if "--prompt" in args:
