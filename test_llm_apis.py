@@ -9,9 +9,12 @@ Usage:
     python test_llm_apis.py                            # test all configured providers
     python test_llm_apis.py anthropic                  # test one provider
     python test_llm_apis.py --model deepseek/...       # test specific OpenRouter model
-    python test_llm_apis.py --list                     # list all OpenRouter models
-    python test_llm_apis.py --list --free              # free only
-    python test_llm_apis.py --list llama               # search by keyword
+    python test_llm_apis.py --list                     # list all providers' models
+    python test_llm_apis.py --list anthropic           # list Anthropic models only
+    python test_llm_apis.py --list gemini              # list Gemini models only
+    python test_llm_apis.py --list openrouter          # list OpenRouter models
+    python test_llm_apis.py --list openrouter --free   # free OpenRouter models only
+    python test_llm_apis.py --list llama               # search OpenRouter by keyword
     python test_llm_apis.py --pick                     # interactive: list → type number → test
     python test_llm_apis.py --pick llama --free        # pick from filtered list
     python test_llm_apis.py --scan anthropic           # test all known Anthropic model names
@@ -60,6 +63,58 @@ GEMINI_MODELS = [
     "gemini-1.5-flash",
     "gemini-1.5-pro",
 ]
+
+
+# ── List helpers (all providers) ─────────────────────────────────────────────
+
+def list_anthropic_models():
+    """Fetch and print available Anthropic models from the API."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        print(f"{RED}ANTHROPIC_API_KEY not set in .env{RESET}")
+        return
+    import httpx
+    print(f"{BOLD}Fetching Anthropic model list...{RESET}", flush=True)
+    resp = httpx.get(
+        "https://api.anthropic.com/v1/models",
+        headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+        timeout=15,
+    )
+    if not resp.is_success:
+        print(f"{RED}Failed: HTTP {resp.status_code}: {resp.text[:200]}{RESET}")
+        return
+    models = resp.json().get("data", [])
+    print(f"\n{BOLD}{'MODEL ID':<45} DISPLAY NAME{RESET}")
+    print("─" * 80)
+    for m in models:
+        print(f"  {CYAN}{m['id']:<43}{RESET}  {DIM}{m.get('display_name', '')}{RESET}")
+    print(f"\n{len(models)} models.")
+
+
+def list_gemini_models():
+    """Fetch and print available Gemini models from the Google AI API."""
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        print(f"{RED}GEMINI_API_KEY not set in .env{RESET}")
+        return
+    import httpx
+    print(f"{BOLD}Fetching Gemini model list...{RESET}", flush=True)
+    resp = httpx.get(
+        f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}",
+        timeout=15,
+    )
+    if not resp.is_success:
+        print(f"{RED}Failed: HTTP {resp.status_code}: {resp.text[:200]}{RESET}")
+        return
+    models = resp.json().get("models", [])
+    # Only show generative models (skip embedding, etc.)
+    models = [m for m in models if "generateContent" in m.get("supportedGenerationMethods", [])]
+    print(f"\n{BOLD}{'MODEL ID':<50} DISPLAY NAME{RESET}")
+    print("─" * 90)
+    for m in models:
+        mid = m["name"].replace("models/", "")  # strip "models/" prefix
+        print(f"  {CYAN}{mid:<48}{RESET}  {DIM}{m.get('displayName', '')}{RESET}")
+    print(f"\n{len(models)} generative models.")
 
 
 # ── OpenRouter helpers ────────────────────────────────────────────────────────
@@ -299,8 +354,23 @@ def main():
         args = [a for a in args if a != "--list"]
         free_only = "--free" in args
         args = [a for a in args if a != "--free"]
-        search = args[0] if args else ""
-        list_openrouter_models(search=search, free_only=free_only)
+        # First non-flag arg: provider name or search term
+        first = args[0].lower() if args else ""
+        if first == "anthropic":
+            list_anthropic_models()
+        elif first == "gemini":
+            list_gemini_models()
+        elif first == "openrouter":
+            list_openrouter_models(search="", free_only=free_only)
+        elif first == "all" or first == "":
+            list_anthropic_models()
+            print()
+            list_gemini_models()
+            print()
+            list_openrouter_models(search="", free_only=free_only)
+        else:
+            # treat as search term for OpenRouter
+            list_openrouter_models(search=first, free_only=free_only)
         return
 
     # ── --pick mode ──────────────────────────────────────────────────────────
