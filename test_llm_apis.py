@@ -6,13 +6,17 @@ Tests Anthropic, Gemini, and OpenRouter APIs independently.
 Reads keys from .env in the same directory.
 
 Usage:
-    python test_llm_apis.py                          # test all configured providers
-    python test_llm_apis.py anthropic                # test one provider
-    python test_llm_apis.py openrouter               # test with model from .env
-    python test_llm_apis.py --model deepseek/deepseek-r1:free   # test specific OR model
-    python test_llm_apis.py --list                   # list all available OpenRouter models
-    python test_llm_apis.py --list --free            # list only free OpenRouter models
-    python test_llm_apis.py --list llama             # list OpenRouter models matching "llama"
+    python test_llm_apis.py                            # test all configured providers
+    python test_llm_apis.py anthropic                  # test one provider
+    python test_llm_apis.py --model deepseek/...       # test specific OpenRouter model
+    python test_llm_apis.py --list                     # list all OpenRouter models
+    python test_llm_apis.py --list --free              # free only
+    python test_llm_apis.py --list llama               # search by keyword
+    python test_llm_apis.py --pick                     # interactive: list → type number → test
+    python test_llm_apis.py --pick llama --free        # pick from filtered list
+    python test_llm_apis.py --scan anthropic           # test all known Anthropic model names
+    python test_llm_apis.py --scan gemini              # test all known Gemini model names
+    python test_llm_apis.py --prompt "Explain MPI."    # custom test prompt
 """
 
 import os
@@ -30,7 +34,7 @@ if env_path.exists():
                 key, _, val = line.partition("=")
                 os.environ.setdefault(key.strip(), val.strip())
 
-PROMPT = "Say hello in one sentence."
+DEFAULT_PROMPT = "Say hello in one sentence."
 
 GREEN  = "\033[92m"
 RED    = "\033[91m"
@@ -50,16 +54,18 @@ ANTHROPIC_MODELS = [
 ]
 
 GEMINI_MODELS = [
-    "gemini-2.0-flash",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash-001",
     "gemini-2.0-flash-lite",
     "gemini-1.5-flash",
     "gemini-1.5-pro",
 ]
 
 
-# ── List OpenRouter models ────────────────────────────────────────────────────
+# ── OpenRouter helpers ────────────────────────────────────────────────────────
 
-def list_openrouter_models(search: str = "", free_only: bool = False):
+def _fetch_openrouter_models(search: str = "", free_only: bool = False) -> list:
+    """Fetch and filter OpenRouter model list. Returns list of model dicts."""
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
     if not api_key:
         print(f"{RED}OPENROUTER_API_KEY not set in .env{RESET}")
@@ -78,20 +84,23 @@ def list_openrouter_models(search: str = "", free_only: bool = False):
 
     models = resp.json().get("data", [])
 
-    # Filter
     if free_only:
         models = [m for m in models if m["id"].endswith(":free")]
     if search:
         s = search.lower()
         models = [m for m in models if s in m["id"].lower() or s in m.get("name", "").lower()]
 
-    # Sort: free first, then alphabetically
     models.sort(key=lambda m: (not m["id"].endswith(":free"), m["id"]))
+    return models
 
-    print(f"\n{BOLD}{'MODEL ID':<55} {'NAME':<30} {'CTX':>7}  PRICE/1M in{RESET}")
-    print("─" * 110)
 
-    for m in models:
+def _print_model_table(models: list, numbered: bool = False):
+    """Print a formatted model table. If numbered=True, prefix each row with an index."""
+    num_col = "  #  " if numbered else "  "
+    print(f"\n{BOLD}{num_col}{'MODEL ID':<53} {'NAME':<30} {'CTX':>7}  PRICE/1M in{RESET}")
+    print("─" * (110 + (5 if numbered else 0)))
+
+    for i, m in enumerate(models):
         mid     = m["id"]
         name    = m.get("name", "")[:29]
         ctx     = m.get("context_length", 0)
@@ -104,24 +113,86 @@ def list_openrouter_models(search: str = "", free_only: bool = False):
         except (ValueError, TypeError):
             price_str = DIM + "n/a" + RESET
 
-        ctx_str = f"{ctx // 1000}k" if ctx >= 1000 else str(ctx)
+        ctx_str  = f"{ctx // 1000}k" if ctx >= 1000 else str(ctx)
         free_tag = f" {GREEN}[FREE]{RESET}" if is_free else ""
-        print(f"  {CYAN}{mid:<53}{RESET}{free_tag:<6}  {DIM}{name:<30}{RESET}  {ctx_str:>6}   {price_str}")
+        num_str  = f"{BOLD}{i+1:>3}.{RESET} " if numbered else "  "
+        print(f"{num_str}{CYAN}{mid:<53}{RESET}{free_tag:<6}  {DIM}{name:<30}{RESET}  {ctx_str:>6}   {price_str}")
 
+
+def list_openrouter_models(search: str = "", free_only: bool = False):
+    """Print a table of available OpenRouter models."""
+    models = _fetch_openrouter_models(search, free_only)
+    _print_model_table(models, numbered=False)
     print(f"\n{len(models)} models shown.")
     if not free_only and not search:
         print(f"  Filter: {BOLD}--free{RESET}  or  {BOLD}--list llama{RESET}  to narrow results")
     print(f"\nTo test a model:")
     print(f"  {BOLD}python test_llm_apis.py --model <model-id>{RESET}")
+    print(f"Or use interactive picker:")
+    print(f"  {BOLD}python test_llm_apis.py --pick{RESET}")
+
+
+def pick_and_test_openrouter(search: str = "", free_only: bool = False, prompt: str = DEFAULT_PROMPT):
+    """Interactive: show numbered list, user picks a number, run the test."""
+    models = _fetch_openrouter_models(search, free_only)
+    if not models:
+        print(f"{YELLOW}No models match your filter.{RESET}")
+        return
+
+    _print_model_table(models, numbered=True)
+    print(f"\n{len(models)} models shown.  (prompt: \"{prompt}\")\n")
+
+    while True:
+        try:
+            raw = input(f"Enter number to test (1–{len(models)}) or {BOLD}q{RESET} to quit: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+
+        if raw.lower() in ("q", ""):
+            return
+
+        try:
+            idx = int(raw) - 1
+            if not (0 <= idx < len(models)):
+                raise ValueError
+        except ValueError:
+            print(f"  {YELLOW}Enter a number between 1 and {len(models)}{RESET}")
+            continue
+
+        model_id = models[idx]["id"]
+        print()
+        run("openrouter", test_openrouter, model_override=model_id, prompt=prompt)
+        print()
+
+
+# ── Scan all known models ─────────────────────────────────────────────────────
+
+def scan_models(provider: str, prompt: str = DEFAULT_PROMPT):
+    """Test every model in the known list for a provider."""
+    if provider == "anthropic":
+        model_list = ANTHROPIC_MODELS
+        test_fn    = test_anthropic
+    elif provider == "gemini":
+        model_list = GEMINI_MODELS
+        test_fn    = test_gemini
+    else:
+        print(f"{RED}--scan supports: anthropic, gemini{RESET}")
+        sys.exit(1)
+
+    print(f"\n{BOLD}Scanning {provider} models{RESET}  (prompt: \"{prompt}\")\n")
+    for model in model_list:
+        run(f"{provider} / {model}", test_fn, model_override=model, prompt=prompt)
+    print()
 
 
 # ── Provider tests ────────────────────────────────────────────────────────────
 
-def test_anthropic(model_override=None):
+def test_anthropic(model_override=None, prompt=DEFAULT_PROMPT):
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     model   = model_override or os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-6")
     if not api_key:
-        return None, "ANTHROPIC_API_KEY not set — skipped"
+        return None, "ANTHROPIC_API_KEY not set — skipped", model
 
     import anthropic
     client = anthropic.Anthropic(api_key=api_key)
@@ -129,15 +200,15 @@ def test_anthropic(model_override=None):
     msg = client.messages.create(
         model=model,
         max_tokens=64,
-        messages=[{"role": "user", "content": PROMPT}],
+        messages=[{"role": "user", "content": prompt}],
     )
     elapsed = time.time() - t0
     return elapsed, msg.content[0].text.strip(), model
 
 
-def test_gemini(model_override=None):
+def test_gemini(model_override=None, prompt=DEFAULT_PROMPT):
     api_key = os.environ.get("GEMINI_API_KEY", "")
-    model   = model_override or os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+    model   = model_override or os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-001")
     if not api_key:
         return None, "GEMINI_API_KEY not set — skipped", model
 
@@ -147,16 +218,16 @@ def test_gemini(model_override=None):
     t0 = time.time()
     response = gc.models.generate_content(
         model=model,
-        contents=PROMPT,
+        contents=prompt,
         config=types.GenerateContentConfig(max_output_tokens=64),
     )
     elapsed = time.time() - t0
     return elapsed, response.text.strip(), model
 
 
-def test_openrouter(model_override=None):
+def test_openrouter(model_override=None, prompt=DEFAULT_PROMPT):
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
-    model   = model_override or os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+    model   = model_override or os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct")
     if not api_key:
         return None, "OPENROUTER_API_KEY not set — skipped", model
 
@@ -173,7 +244,7 @@ def test_openrouter(model_override=None):
         json={
             "model": model,
             "max_tokens": 64,
-            "messages": [{"role": "user", "content": PROMPT}],
+            "messages": [{"role": "user", "content": prompt}],
         },
         timeout=60,
     )
@@ -195,10 +266,10 @@ PROVIDERS = {
 
 # ── Runner ────────────────────────────────────────────────────────────────────
 
-def run(name: str, fn, model_override=None):
+def run(name: str, fn, model_override=None, prompt=DEFAULT_PROMPT):
     print(f"Testing {BOLD}{name}{RESET}...", end=" ", flush=True)
     try:
-        elapsed, result, model = fn(model_override)
+        elapsed, result, model = fn(model_override=model_override, prompt=prompt)
         if elapsed is None:
             print(f"{YELLOW}⚠ SKIP{RESET}  {result}")
             return "skip"
@@ -213,6 +284,16 @@ def run(name: str, fn, model_override=None):
 def main():
     args = sys.argv[1:]
 
+    # ── --prompt "..." ───────────────────────────────────────────────────────
+    prompt = DEFAULT_PROMPT
+    if "--prompt" in args:
+        idx = args.index("--prompt")
+        if idx + 1 >= len(args):
+            print(f"{RED}--prompt requires a string{RESET}")
+            sys.exit(1)
+        prompt = args[idx + 1]
+        args = args[:idx] + args[idx + 2:]
+
     # ── --list mode ──────────────────────────────────────────────────────────
     if "--list" in args:
         args = [a for a in args if a != "--list"]
@@ -220,6 +301,25 @@ def main():
         args = [a for a in args if a != "--free"]
         search = args[0] if args else ""
         list_openrouter_models(search=search, free_only=free_only)
+        return
+
+    # ── --pick mode ──────────────────────────────────────────────────────────
+    if "--pick" in args:
+        args = [a for a in args if a != "--pick"]
+        free_only = "--free" in args
+        args = [a for a in args if a != "--free"]
+        search = args[0] if args else ""
+        pick_and_test_openrouter(search=search, free_only=free_only, prompt=prompt)
+        return
+
+    # ── --scan provider ──────────────────────────────────────────────────────
+    if "--scan" in args:
+        idx = args.index("--scan")
+        if idx + 1 >= len(args):
+            print(f"{RED}--scan requires a provider name: anthropic or gemini{RESET}")
+            sys.exit(1)
+        provider = args[idx + 1]
+        scan_models(provider, prompt=prompt)
         return
 
     # ── --model <id> ─────────────────────────────────────────────────────────
@@ -231,7 +331,6 @@ def main():
             sys.exit(1)
         model_override = args[idx + 1]
         args = args[:idx] + args[idx + 2:]
-        # When --model is given, run only openrouter unless provider specified
         if not args:
             args = ["openrouter"]
 
@@ -243,8 +342,9 @@ def main():
         print(f"Unknown provider(s): {args}. Choose from: {list(PROVIDERS)}")
         sys.exit(1)
 
-    print(f"\n{BOLD}LLM API Test{RESET}  (prompt: \"{PROMPT}\")\n")
-    results = {name: run(name, fn, model_override) for name, fn in to_run.items()}
+    print(f"\n{BOLD}LLM API Test{RESET}  (prompt: \"{prompt}\")\n")
+    results = {name: run(name, fn, model_override=model_override, prompt=prompt)
+               for name, fn in to_run.items()}
     print()
 
     passed  = sum(1 for r in results.values() if r == "pass")
