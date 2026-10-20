@@ -1,6 +1,9 @@
 # LLM API Tester
 
-A single-file Python script that tests Anthropic, Gemini, and OpenRouter APIs independently. Useful for quickly checking which keys are working, exploring available models, and comparing pricing — without spinning up any server.
+Python tools for testing cloud-provider APIs and locally hosted LLM endpoints.
+
+- `test_llm_apis.py` tests Anthropic, Gemini, and OpenRouter independently, with model listing and pricing information.
+- `local/test_llm_api.py` discovers models and sends a sample chat request to a local, OpenAI-compatible server.
 
 ## Setup
 
@@ -10,7 +13,31 @@ cp .env.example .env
 # Add your API keys to .env
 ```
 
-## Usage
+## Local LLM server
+
+The local tester requires Python 3.9+ and uses only the standard library. It does not require the cloud-provider packages.
+
+For a fresh checkout, run from the repository root:
+
+```bash
+cp local/.env.example local/.env
+# Edit local/.env with your server URL and API key.
+python3 local/test_llm_api.py
+```
+
+Keep an existing `local/.env` when updating the repository. The local tester reads that file next to its script, separately from the cloud tester's root `.env`. Both `.env` files are ignored by Git.
+
+Configuration:
+
+- `LLM_API_BASE`: the server's API base URL; the template uses `http://localhost:8000/v1`.
+- `LLM_API_KEY`: the key expected by the server.
+- `LLM_MODEL`: optional model name; leave it empty to discover and select an available model.
+
+The script probes several model-list routes, then sends one short chat request to `<LLM_API_BASE>/chat/completions`. It reports whether a key is configured without displaying the key itself.
+
+On another computer, clone this repository and configure `local/.env` there; saved credentials are not synchronized through GitHub.
+
+## Cloud-provider usage
 
 ### Test all configured providers
 ```bash
